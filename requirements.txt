@@ -8,3 +8,5 @@ numpy
 twilio
 python-dateutil
 requests
+psutil>=5.9.0
+scapy>=2.5.0
