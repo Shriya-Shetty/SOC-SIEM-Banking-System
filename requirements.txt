@@ -2,3 +2,4 @@ streamlit
 supabase
 plotly
 pandas
+opencv-python-headless
