@@ -4,11 +4,11 @@ Enhanced with:
   • Real Image Forensics (Signature/Cheque Analysis)
   • Phone-based login using Supabase Auth + Twilio SMS
   • Encrypted banking transactions
-  • Security forensics (memory, network, image steganography)
+  • Security forensics (Memory, Network, Image Steganography)
   • SIEM risk-scoring dashboard
 """
 
-import base64, hashlib, json, random, time, io, math
+import base64, hashlib, json, random, io, math
 from datetime import datetime
 import pandas as pd, plotly.express as px, streamlit as st
 from supabase import create_client, Client
@@ -37,12 +37,12 @@ def encrypt_data(d):  return base64.b64encode(json.dumps(d).encode()).decode()
 def create_hash(d):   return hashlib.sha256(json.dumps(d,sort_keys=True).encode()).hexdigest()
 def fmt_money(v):     return f"${v:,.2f}"
 
-
 # =============================================================
 # 2️⃣  PHONE-BASED AUTHENTICATION (Supabase + Twilio)
 # =============================================================
 
 def send_phone_otp(phone_number: str):
+    """Send OTP to phone using Supabase Auth (Twilio backend)."""
     try:
         supabase.auth.sign_in_with_otp({"phone": phone_number})
         st.success(f"📨 OTP sent to {phone_number}")
@@ -52,13 +52,13 @@ def send_phone_otp(phone_number: str):
         return False
 
 def verify_phone_otp(phone_number: str, otp_code: str):
+    """Verify OTP using Supabase Auth."""
     try:
         res = supabase.auth.verify_otp({"phone": phone_number, "token": otp_code, "type": "sms"})
         return res.user is not None
     except Exception as e:
         st.error(f"OTP verification failed: {e}")
         return False
-
 
 # =============================================================
 # 3️⃣  BANKING & FORENSICS UTILITIES
@@ -115,35 +115,29 @@ def run_network_forensics(cid):
     log_event(cid, "Network Forensics", "success", f"{enc} encrypted")
     return pk, enc, len(pk) - enc
 
-
 # =============================================================
 # 4️⃣  REAL IMAGE FORENSICS (Signature / Cheque)
 # =============================================================
 
 def run_stego(cid, uploaded_file):
-    """Analyze uploaded image for tampering or steganography indicators."""
+    """Real image forensics, Cloud-safe."""
     try:
-        img_bytes = uploaded_file.read()
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        file_bytes = uploaded_file.getvalue()
+        img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         np_img = np.array(img)
 
-        height, width, _ = np_img.shape
-        size_kb = len(img_bytes) / 1024
-
         gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
-        noise_var = np.var(gray)
-
+        noise_var = float(np.var(gray))
         edges = cv2.Canny(gray, 100, 200)
-        edge_density = np.sum(edges > 0) / edges.size * 100
+        edge_density = float(np.sum(edges > 0) / edges.size * 100)
 
         hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
-        hist_var = np.var(hist / hist.sum())
-
+        hist_var = float(np.var(hist / hist.sum()))
         histogram = np.bincount(gray.flatten(), minlength=256)
         probs = histogram / np.sum(histogram)
-        entropy = -np.sum([p * math.log2(p) for p in probs if p > 0])
+        entropy = float(-np.sum([p * math.log2(p) for p in probs if p > 0]))
 
-        # Risk scoring
+        # Scoring logic
         score = 0
         if entropy > 7.3: score += 30
         if edge_density > 8: score += 25
@@ -151,14 +145,15 @@ def run_stego(cid, uploaded_file):
         if noise_var > 2000: score += 25
         score = min(int(score), 100)
 
+        h, w, _ = np_img.shape
         analysis = {
-            "width": width,
-            "height": height,
-            "size_kb": round(size_kb, 2),
-            "noise_variance": round(float(noise_var), 2),
-            "edge_density": round(float(edge_density), 2),
-            "entropy": round(float(entropy), 3),
-            "histogram_variance": round(float(hist_var), 6)
+            "width": w,
+            "height": h,
+            "noise_variance": round(noise_var, 2),
+            "edge_density": round(edge_density, 2),
+            "entropy": round(entropy, 3),
+            "histogram_variance": round(hist_var, 6),
+            "file_size_kb": round(len(file_bytes) / 1024, 2)
         }
 
         supabase.table("forensic_steganography_scans").insert({
@@ -170,19 +165,18 @@ def run_stego(cid, uploaded_file):
 
         log_event(cid, "Stego Scan", "warning" if score > 50 else "success", f"{uploaded_file.name}:{score}%")
 
-        return analysis, score, img, edges
+        edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+        return analysis, score, img, edges_rgb
 
     except Exception as e:
-        st.error(f"Image analysis failed: {e}")
+        st.error(f"❌ Image analysis failed: {e}")
         return {}, 0, None, None
-
 
 def calc_risk(cid):
     logs = supabase.table("activity_logs").select("*").eq("cust_id", cid).execute().data or []
     f = sum(l["action"] == "Login" and l["status"] != "success" for l in logs)
     w = sum(l["status"] == "warning" for l in logs)
     return min(f * 10 + w * 15, 100)
-
 
 # =============================================================
 # 5️⃣  STREAMLIT UI
@@ -239,29 +233,40 @@ def dashboard_ui():
 
     elif opt == "Forensics":
         st.markdown("### 🔬 Forensic Tools")
-        if st.button("Memory Scan"):
-            data, s = run_memory_forensics(1)
-            st.write(data)
-        if st.button("Network Scan"):
-            pk, e, u = run_network_forensics(1)
-            st.write(pk)
 
-        st.markdown("#### 🖼️ Image for Steganography / Signature Analysis")
-        uploaded = st.file_uploader("Upload image (signature, cheque, or photo)", type=["jpg","jpeg","png"])
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Memory Scan"):
+                data, s = run_memory_forensics(1)
+                st.success(f"Scan complete — {s} suspicious process(es).")
+                st.json(data)
+        with col2:
+            if st.button("Network Scan"):
+                pk, e, u = run_network_forensics(1)
+                st.success(f"Packets captured — {e} encrypted, {u} unencrypted.")
+                st.json(pk)
 
-        if uploaded and st.button("Analyze Image"):
-            analysis, score, img, edges = run_stego(1, uploaded)
-            if analysis:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.image(img, caption="Uploaded Image", use_container_width=True)
-                with col2:
-                    st.image(edges, caption="Detected Edges", use_container_width=True)
+        st.markdown("#### 🖼️ Image Steganography / Signature Analysis")
+        uploaded = st.file_uploader("Upload an image (e.g. cheque, signature, document)", type=["jpg", "jpeg", "png"])
+
+        if uploaded is not None and st.button("Analyze Image"):
+            with st.spinner("🔍 Analyzing image for tampering..."):
+                analysis, score, img, edges = run_stego(1, uploaded)
+
+            if img is not None:
+                st.markdown("### 🖼️ Forensic Visualization")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.image(img, caption="Original Image", use_container_width=True)
+                with c2:
+                    st.image(edges, caption="Edge Map (Tampering Clues)", use_container_width=True)
+
                 st.subheader("📊 Analysis Results")
                 st.json(analysis)
-                st.metric("Suspicion Level", f"{score}%")
+                st.metric("Suspicion Score", f"{score}%")
+
                 if score > 60:
-                    st.warning("⚠️ Possible tampering or hidden data detected!")
+                    st.warning("⚠️ Possible image tampering or hidden data detected.")
                 else:
                     st.success("✅ Image appears clean and untampered.")
 
@@ -275,7 +280,6 @@ def dashboard_ui():
             st.plotly_chart(px.pie(values=list(dist.values()), names=list(dist.keys())))
         else:
             st.info("No logs yet.")
-
 
 def main():
     ui_header()
