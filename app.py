@@ -310,172 +310,58 @@ def create_transaction(cust_id: int, to_account: str, amount: float) -> Tuple[bo
 # =============================================================
 
 def run_memory_forensics(cust_id: int) -> Tuple[List[dict], int, dict]:
-    """Real-time memory forensics using psutil to analyze actual system processes."""
-    try:
-        import psutil
-        
-        all_processes = []
-        suspicious_count = 0
-        malicious_count = 0
-        
-        # Known suspicious patterns
-        suspicious_names = ["mimikatz", "keylog", "inject", "dump", "crack", "backdoor", "trojan", "rootkit"]
-        high_risk_ports = [4444, 5555, 6666, 31337]  # Common hacker ports
-        
-        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_info', 'connections', 'exe']):
-            try:
-                proc_info = proc.info
-                
-                # Get process details
-                pid = proc_info.get('pid', 0)
-                name = proc_info.get('name', 'Unknown')
-                username = proc_info.get('username', 'UNKNOWN')
-                
-                # Get CPU and memory
-                try:
-                    cpu = proc.cpu_percent(interval=0.1)
-                except:
-                    cpu = 0.0
-                
-                mem_info = proc_info.get('memory_info')
-                mem_mb = round(mem_info.rss / (1024 * 1024), 2) if mem_info else 0
-                
-                # Get executable path
-                try:
-                    exe_path = proc_info.get('exe', 'N/A')
-                except:
-                    exe_path = 'Access Denied'
-                
-                # Analyze for suspicious behavior
-                status = "safe"
-                reasons = []
-                
-                # Check 1: Suspicious process name
-                name_lower = name.lower()
-                if any(sus in name_lower for sus in suspicious_names):
-                    status = "malicious"
-                    reasons.append("Malicious process name detected")
-                    malicious_count += 1
-                
-                # Check 2: High CPU usage (over 50%)
-                elif cpu > 50:
-                    status = "suspicious"
-                    reasons.append(f"High CPU usage: {cpu:.1f}%")
-                    suspicious_count += 1
-                
-                # Check 3: Excessive memory usage (over 1GB)
-                elif mem_mb > 1024:
-                    status = "suspicious"
-                    reasons.append(f"High memory usage: {mem_mb:.0f}MB")
-                    suspicious_count += 1
-                
-                # Check 4: Process with no username (hidden/system exploit)
-                elif username == 'UNKNOWN' or username is None:
-                    status = "suspicious"
-                    reasons.append("Unknown user - potential privilege escalation")
-                    suspicious_count += 1
-                
-                # Check 5: Suspicious network connections
-                try:
-                    connections = proc.connections(kind='inet')
-                    if connections:
-                        for conn in connections:
-                            if hasattr(conn, 'laddr') and conn.laddr:
-                                port = conn.laddr.port
-                                if port in high_risk_ports:
-                                    status = "malicious"
-                                    reasons.append(f"Suspicious port detected: {port}")
-                                    malicious_count += 1
-                                    suspicious_count -= 1 if status == "suspicious" else 0
-                                    break
-                except:
-                    pass
-                
-                # Check 6: Process running from suspicious location
-                if exe_path and exe_path != 'Access Denied' and exe_path != 'N/A':
-                    suspicious_paths = ['\\temp\\', '\\tmp\\', '\\appdata\\local\\temp\\', '\\downloads\\']
-                    if any(sus_path in exe_path.lower() for sus_path in suspicious_paths):
-                        if status == "safe":
-                            status = "suspicious"
-                            reasons.append("Running from suspicious location")
-                            suspicious_count += 1
-                
-                process_data = {
-                    "name": name,
-                    "pid": pid,
-                    "cpu": round(cpu, 2),
-                    "mem": mem_mb,
-                    "user": username.split('\\')[-1] if username else "UNKNOWN",
-                    "status": status,
-                    "path": exe_path[:50] + "..." if len(exe_path) > 50 else exe_path,
-                    "reason": " | ".join(reasons) if reasons else "Normal behavior"
-                }
-                
-                all_processes.append(process_data)
-                
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-        
-        # Calculate metrics
-        total_mem = sum(p["mem"] for p in all_processes)
-        avg_cpu = sum(p["cpu"] for p in all_processes) / len(all_processes) if all_processes else 0
-        
-        metrics = {
-            "total_memory_mb": round(total_mem, 2),
-            "avg_cpu_usage": round(avg_cpu, 2),
-            "total_processes": len(all_processes),
-            "suspicious_count": suspicious_count,
-            "malicious_count": malicious_count
-        }
-        
-        scan_data = {
-            "processes": all_processes[:100],  # Limit to top 100 for storage
-            "metrics": metrics,
-            "scan_time": now_iso()
-        }
-        
-        safe_insert("forensic_memory_scans", {
-            "cust_id": cust_id,
-            "total_processes": len(all_processes),
-            "suspicious_processes": suspicious_count,
-            "malicious_processes": malicious_count,
-            "scan_data": scan_data,
-            "scan_timestamp": now_iso()
-        })
-        
-        severity = "critical" if malicious_count > 0 else ("warning" if suspicious_count > 0 else "info")
-        log_event(cust_id, "Memory Forensics", "completed", 
-                 f"Scanned {len(all_processes)} processes: {suspicious_count} suspicious, {malicious_count} malicious", 
-                 severity=severity)
-        
-        return all_processes, suspicious_count, metrics
-        
-    except ImportError:
-        st.error("⚠️ psutil library not installed. Using simulated data.")
-        # Fallback to simulated data
-        return run_memory_forensics_simulated(cust_id)
-    except Exception as e:
-        st.error(f"❌ Memory scan error: {e}")
-        return [], 0, {}
-
-def run_memory_forensics_simulated(cust_id: int) -> Tuple[List[dict], int, dict]:
-    """Fallback simulated memory forensics if psutil is not available."""
-    processes = [
-        {"name": "streamlit", "pid": 1234, "cpu": 15.2, "mem": 245, "user": "USER", "status": "safe", 
-         "path": "/usr/local/bin/streamlit", "reason": "Normal behavior"},
-        {"name": "python", "pid": 1235, "cpu": 8.5, "mem": 180, "user": "USER", "status": "safe", 
-         "path": "/usr/bin/python3", "reason": "Normal behavior"},
+    safe_processes = [
+        {"name": "banking.exe", "pid": 1234, "cpu": 3.1, "mem": 50, "user": "SYSTEM", "status": "safe"},
+        {"name": "chrome.exe", "pid": 2456, "cpu": 12.5, "mem": 320, "user": "USER", "status": "safe"},
+        {"name": "explorer.exe", "pid": 3678, "cpu": 1.2, "mem": 85, "user": "USER", "status": "safe"},
+        {"name": "svchost.exe", "pid": 4890, "cpu": 2.8, "mem": 45, "user": "SYSTEM", "status": "safe"},
     ]
     
+    suspicious_processes = [
+        {"name": "suspicious.exe", "pid": 9000, "cpu": 45.3, "mem": 560, "user": "UNKNOWN", "status": "suspicious", 
+         "reason": "High CPU usage, unknown signature"},
+        {"name": "keylogger.dll", "pid": 9123, "cpu": 8.7, "mem": 12, "user": "USER", "status": "malicious",
+         "reason": "Known malware signature detected"},
+    ]
+    
+    all_processes = safe_processes.copy()
+    if random.random() > 0.5:
+        all_processes.extend(suspicious_processes[:random.randint(1, 2)])
+    
+    suspicious_count = sum(1 for p in all_processes if p["status"] in ["suspicious", "malicious"])
+    malicious_count = sum(1 for p in all_processes if p["status"] == "malicious")
+    
+    total_mem = sum(p["mem"] for p in all_processes)
+    avg_cpu = sum(p["cpu"] for p in all_processes) / len(all_processes)
+    
     metrics = {
-        "total_memory_mb": 425,
-        "avg_cpu_usage": 11.85,
-        "total_processes": 2,
-        "suspicious_count": 0,
-        "malicious_count": 0
+        "total_memory_mb": total_mem,
+        "avg_cpu_usage": round(avg_cpu, 2),
+        "total_processes": len(all_processes),
+        "suspicious_count": suspicious_count,
+        "malicious_count": malicious_count
     }
     
-    return processes, 0, metrics
+    scan_data = {
+        "processes": all_processes,
+        "metrics": metrics,
+        "scan_time": now_iso()
+    }
+    
+    safe_insert("forensic_memory_scans", {
+        "cust_id": cust_id,
+        "total_processes": len(all_processes),
+        "suspicious_processes": suspicious_count,
+        "malicious_processes": malicious_count,
+        "scan_data": scan_data,
+        "scan_timestamp": now_iso()
+    })
+    
+    severity = "critical" if malicious_count > 0 else ("warning" if suspicious_count > 0 else "info")
+    log_event(cust_id, "Memory Forensics", "completed", 
+             f"Found {suspicious_count} suspicious, {malicious_count} malicious", severity=severity)
+    
+    return all_processes, suspicious_count, metrics
 
 def run_network_forensics(cust_id: int) -> Tuple[List[dict], dict]:
     safe_packets = [
