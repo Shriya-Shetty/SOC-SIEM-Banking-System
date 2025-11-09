@@ -310,115 +310,448 @@ def create_transaction(cust_id: int, to_account: str, amount: float) -> Tuple[bo
 # =============================================================
 
 def run_memory_forensics(cust_id: int) -> Tuple[List[dict], int, dict]:
-    safe_processes = [
-        {"name": "banking.exe", "pid": 1234, "cpu": 3.1, "mem": 50, "user": "SYSTEM", "status": "safe"},
-        {"name": "chrome.exe", "pid": 2456, "cpu": 12.5, "mem": 320, "user": "USER", "status": "safe"},
-        {"name": "explorer.exe", "pid": 3678, "cpu": 1.2, "mem": 85, "user": "USER", "status": "safe"},
-        {"name": "svchost.exe", "pid": 4890, "cpu": 2.8, "mem": 45, "user": "SYSTEM", "status": "safe"},
+    """Real-time memory forensics using psutil to analyze actual system processes."""
+    try:
+        import psutil
+        
+        all_processes = []
+        suspicious_count = 0
+        malicious_count = 0
+        
+        # Known suspicious patterns
+        suspicious_names = ["mimikatz", "keylog", "inject", "dump", "crack", "backdoor", "trojan", "rootkit"]
+        high_risk_ports = [4444, 5555, 6666, 31337]  # Common hacker ports
+        
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_info', 'connections', 'exe']):
+            try:
+                proc_info = proc.info
+                
+                # Get process details
+                pid = proc_info.get('pid', 0)
+                name = proc_info.get('name', 'Unknown')
+                username = proc_info.get('username', 'UNKNOWN')
+                
+                # Get CPU and memory
+                try:
+                    cpu = proc.cpu_percent(interval=0.1)
+                except:
+                    cpu = 0.0
+                
+                mem_info = proc_info.get('memory_info')
+                mem_mb = round(mem_info.rss / (1024 * 1024), 2) if mem_info else 0
+                
+                # Get executable path
+                try:
+                    exe_path = proc_info.get('exe', 'N/A')
+                except:
+                    exe_path = 'Access Denied'
+                
+                # Analyze for suspicious behavior
+                status = "safe"
+                reasons = []
+                
+                # Check 1: Suspicious process name
+                name_lower = name.lower()
+                if any(sus in name_lower for sus in suspicious_names):
+                    status = "malicious"
+                    reasons.append("Malicious process name detected")
+                    malicious_count += 1
+                
+                # Check 2: High CPU usage (over 50%)
+                elif cpu > 50:
+                    status = "suspicious"
+                    reasons.append(f"High CPU usage: {cpu:.1f}%")
+                    suspicious_count += 1
+                
+                # Check 3: Excessive memory usage (over 1GB)
+                elif mem_mb > 1024:
+                    status = "suspicious"
+                    reasons.append(f"High memory usage: {mem_mb:.0f}MB")
+                    suspicious_count += 1
+                
+                # Check 4: Process with no username (hidden/system exploit)
+                elif username == 'UNKNOWN' or username is None:
+                    status = "suspicious"
+                    reasons.append("Unknown user - potential privilege escalation")
+                    suspicious_count += 1
+                
+                # Check 5: Suspicious network connections
+                try:
+                    connections = proc.connections(kind='inet')
+                    if connections:
+                        for conn in connections:
+                            if hasattr(conn, 'laddr') and conn.laddr:
+                                port = conn.laddr.port
+                                if port in high_risk_ports:
+                                    status = "malicious"
+                                    reasons.append(f"Suspicious port detected: {port}")
+                                    malicious_count += 1
+                                    suspicious_count -= 1 if status == "suspicious" else 0
+                                    break
+                except:
+                    pass
+                
+                # Check 6: Process running from suspicious location
+                if exe_path and exe_path != 'Access Denied' and exe_path != 'N/A':
+                    suspicious_paths = ['\\temp\\', '\\tmp\\', '\\appdata\\local\\temp\\', '\\downloads\\']
+                    if any(sus_path in exe_path.lower() for sus_path in suspicious_paths):
+                        if status == "safe":
+                            status = "suspicious"
+                            reasons.append("Running from suspicious location")
+                            suspicious_count += 1
+                
+                process_data = {
+                    "name": name,
+                    "pid": pid,
+                    "cpu": round(cpu, 2),
+                    "mem": mem_mb,
+                    "user": username.split('\\')[-1] if username else "UNKNOWN",
+                    "status": status,
+                    "path": exe_path[:50] + "..." if len(exe_path) > 50 else exe_path,
+                    "reason": " | ".join(reasons) if reasons else "Normal behavior"
+                }
+                
+                all_processes.append(process_data)
+                
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        
+        # Calculate metrics
+        total_mem = sum(p["mem"] for p in all_processes)
+        avg_cpu = sum(p["cpu"] for p in all_processes) / len(all_processes) if all_processes else 0
+        
+        metrics = {
+            "total_memory_mb": round(total_mem, 2),
+            "avg_cpu_usage": round(avg_cpu, 2),
+            "total_processes": len(all_processes),
+            "suspicious_count": suspicious_count,
+            "malicious_count": malicious_count
+        }
+        
+        scan_data = {
+            "processes": all_processes[:100],  # Limit to top 100 for storage
+            "metrics": metrics,
+            "scan_time": now_iso()
+        }
+        
+        safe_insert("forensic_memory_scans", {
+            "cust_id": cust_id,
+            "total_processes": len(all_processes),
+            "suspicious_processes": suspicious_count,
+            "malicious_processes": malicious_count,
+            "scan_data": scan_data,
+            "scan_timestamp": now_iso()
+        })
+        
+        severity = "critical" if malicious_count > 0 else ("warning" if suspicious_count > 0 else "info")
+        log_event(cust_id, "Memory Forensics", "completed", 
+                 f"Scanned {len(all_processes)} processes: {suspicious_count} suspicious, {malicious_count} malicious", 
+                 severity=severity)
+        
+        return all_processes, suspicious_count, metrics
+        
+    except ImportError:
+        st.error("⚠️ psutil library not installed. Using simulated data.")
+        # Fallback to simulated data
+        return run_memory_forensics_simulated(cust_id)
+    except Exception as e:
+        st.error(f"❌ Memory scan error: {e}")
+        return [], 0, {}
+
+def run_memory_forensics_simulated(cust_id: int) -> Tuple[List[dict], int, dict]:
+    """Fallback simulated memory forensics if psutil is not available."""
+    processes = [
+        {"name": "streamlit", "pid": 1234, "cpu": 15.2, "mem": 245, "user": "USER", "status": "safe", 
+         "path": "/usr/local/bin/streamlit", "reason": "Normal behavior"},
+        {"name": "python", "pid": 1235, "cpu": 8.5, "mem": 180, "user": "USER", "status": "safe", 
+         "path": "/usr/bin/python3", "reason": "Normal behavior"},
     ]
-    
-    suspicious_processes = [
-        {"name": "suspicious.exe", "pid": 9000, "cpu": 45.3, "mem": 560, "user": "UNKNOWN", "status": "suspicious", 
-         "reason": "High CPU usage, unknown signature"},
-        {"name": "keylogger.dll", "pid": 9123, "cpu": 8.7, "mem": 12, "user": "USER", "status": "malicious",
-         "reason": "Known malware signature detected"},
-    ]
-    
-    all_processes = safe_processes.copy()
-    if random.random() > 0.5:
-        all_processes.extend(suspicious_processes[:random.randint(1, 2)])
-    
-    suspicious_count = sum(1 for p in all_processes if p["status"] in ["suspicious", "malicious"])
-    malicious_count = sum(1 for p in all_processes if p["status"] == "malicious")
-    
-    total_mem = sum(p["mem"] for p in all_processes)
-    avg_cpu = sum(p["cpu"] for p in all_processes) / len(all_processes)
     
     metrics = {
-        "total_memory_mb": total_mem,
-        "avg_cpu_usage": round(avg_cpu, 2),
-        "total_processes": len(all_processes),
-        "suspicious_count": suspicious_count,
-        "malicious_count": malicious_count
+        "total_memory_mb": 425,
+        "avg_cpu_usage": 11.85,
+        "total_processes": 2,
+        "suspicious_count": 0,
+        "malicious_count": 0
     }
     
-    scan_data = {
-        "processes": all_processes,
-        "metrics": metrics,
-        "scan_time": now_iso()
-    }
-    
-    safe_insert("forensic_memory_scans", {
-        "cust_id": cust_id,
-        "total_processes": len(all_processes),
-        "suspicious_processes": suspicious_count,
-        "malicious_processes": malicious_count,
-        "scan_data": scan_data,
-        "scan_timestamp": now_iso()
-    })
-    
-    severity = "critical" if malicious_count > 0 else ("warning" if suspicious_count > 0 else "info")
-    log_event(cust_id, "Memory Forensics", "completed", 
-             f"Found {suspicious_count} suspicious, {malicious_count} malicious", severity=severity)
-    
-    return all_processes, suspicious_count, metrics
+    return processes, 0, metrics
 
 def run_network_forensics(cust_id: int) -> Tuple[List[dict], dict]:
-    safe_packets = [
-        {"src": "192.168.1.10", "dst": "8.8.8.8", "proto": "DNS", "port": 53, "encrypted": False, "size": 64, "status": "safe"},
-        {"src": "192.168.1.10", "dst": "172.217.0.46", "proto": "HTTPS", "port": 443, "encrypted": True, "size": 1420, "status": "safe"},
-        {"src": "192.168.1.10", "dst": "192.168.1.1", "proto": "ICMP", "port": 0, "encrypted": False, "size": 32, "status": "safe"},
-    ]
-    
-    suspicious_packets = [
-        {"src": "192.168.1.10", "dst": "10.0.0.50", "proto": "FTP", "port": 21, "encrypted": False, "size": 256, "status": "suspicious", "reason": "Unencrypted file transfer"},
-        {"src": "192.168.1.10", "dst": "185.220.101.45", "proto": "TCP", "port": 9050, "encrypted": True, "size": 512, "status": "suspicious", "reason": "Potential Tor connection"},
-    ]
-    
-    all_packets = safe_packets.copy()
-    if random.random() > 0.6:
-        all_packets.extend(suspicious_packets[:random.randint(1, 2)])
-    
-    encrypted_count = sum(1 for p in all_packets if p["encrypted"])
-    unencrypted_count = len(all_packets) - encrypted_count
-    suspicious_count = sum(1 for p in all_packets if p["status"] == "suspicious")
-    total_bytes = sum(p["size"] for p in all_packets)
-    
-    proto_dist = defaultdict(int)
-    for p in all_packets:
-        proto_dist[p["proto"]] += 1
-    
-    metrics = {
-        "total_packets": len(all_packets),
-        "encrypted_packets": encrypted_count,
-        "unencrypted_packets": unencrypted_count,
-        "suspicious_packets": suspicious_count,
-        "total_bytes": total_bytes,
-        "protocol_distribution": dict(proto_dist)
-    }
-    
-    capture_data = {
-        "packets": all_packets,
-        "metrics": metrics,
-        "capture_time": now_iso()
-    }
-    
-    safe_insert("forensic_network_captures", {
-        "cust_id": cust_id,
-        "total_packets": len(all_packets),
-        "encrypted_packets": encrypted_count,
-        "unencrypted_packets": unencrypted_count,
-        "suspicious_packets": suspicious_count,
-        "capture_data": capture_data,
-        "capture_timestamp": now_iso()
-    })
-    
-    severity = "warning" if suspicious_count > 0 else "info"
-    log_event(cust_id, "Network Forensics", "completed", 
-             f"Analyzed {len(all_packets)} packets: {encrypted_count} encrypted, {suspicious_count} suspicious", 
-             severity=severity)
-    
-    return all_packets, metrics
+    """Real-time network forensics using scapy to capture actual network traffic."""
+    try:
+        from scapy.all import sniff, IP, TCP, UDP, ICMP, DNS, Raw
+        import socket
+        
+        st.info("🔍 Starting packet capture for 10 seconds...")
+        
+        captured_packets = []
+        suspicious_count = 0
+        
+        # Known malicious IPs and suspicious ports
+        suspicious_ips = ["185.220.101", "45.142.212", "195.123."]  # Tor exit nodes, known malicious prefixes
+        suspicious_ports = [4444, 5555, 6666, 7777, 31337, 12345]  # Common backdoor ports
+        high_risk_protocols = ["FTP", "TELNET", "HTTP"]  # Unencrypted protocols
+        
+        def packet_callback(packet):
+            try:
+                if IP in packet:
+                    src_ip = packet[IP].src
+                    dst_ip = packet[IP].dst
+                    
+                    # Determine protocol
+                    protocol = "Unknown"
+                    src_port = 0
+                    dst_port = 0
+                    encrypted = False
+                    packet_size = len(packet)
+                    
+                    if TCP in packet:
+                        src_port = packet[TCP].sport
+                        dst_port = packet[TCP].dport
+                        
+                        # Identify protocol by port
+                        if dst_port == 443 or src_port == 443:
+                            protocol = "HTTPS"
+                            encrypted = True
+                        elif dst_port == 80 or src_port == 80:
+                            protocol = "HTTP"
+                        elif dst_port == 22 or src_port == 22:
+                            protocol = "SSH"
+                            encrypted = True
+                        elif dst_port == 21 or src_port == 21:
+                            protocol = "FTP"
+                        elif dst_port == 23 or src_port == 23:
+                            protocol = "TELNET"
+                        elif dst_port == 3389 or src_port == 3389:
+                            protocol = "RDP"
+                            encrypted = True
+                        elif dst_port == 25 or src_port == 25:
+                            protocol = "SMTP"
+                        else:
+                            protocol = "TCP"
+                    
+                    elif UDP in packet:
+                        src_port = packet[UDP].sport
+                        dst_port = packet[UDP].dport
+                        
+                        if dst_port == 53 or src_port == 53:
+                            protocol = "DNS"
+                        elif dst_port == 123 or src_port == 123:
+                            protocol = "NTP"
+                        else:
+                            protocol = "UDP"
+                    
+                    elif ICMP in packet:
+                        protocol = "ICMP"
+                    
+                    # Analyze for suspicious activity
+                    status = "safe"
+                    reasons = []
+                    
+                    # Check 1: Suspicious destination IP
+                    if any(suspicious_ip in dst_ip for suspicious_ip in suspicious_ips):
+                        status = "suspicious"
+                        reasons.append(f"Connection to suspicious IP: {dst_ip}")
+                    
+                    # Check 2: Suspicious ports
+                    if dst_port in suspicious_ports or src_port in suspicious_ports:
+                        status = "suspicious"
+                        reasons.append(f"Suspicious port detected: {dst_port if dst_port in suspicious_ports else src_port}")
+                    
+                    # Check 3: Unencrypted sensitive protocols
+                    if protocol in high_risk_protocols:
+                        status = "suspicious"
+                        reasons.append(f"Unencrypted {protocol} traffic detected")
+                    
+                    # Check 4: Large unencrypted data transfer
+                    if packet_size > 1000 and not encrypted:
+                        status = "suspicious"
+                        reasons.append(f"Large unencrypted transfer: {packet_size} bytes")
+                    
+                    # Check 5: DNS tunneling detection (unusually large DNS packets)
+                    if protocol == "DNS" and packet_size > 512:
+                        status = "suspicious"
+                        reasons.append("Potential DNS tunneling (large DNS packet)")
+                    
+                    packet_info = {
+                        "src": src_ip,
+                        "dst": dst_ip,
+                        "proto": protocol,
+                        "port": dst_port if dst_port else src_port,
+                        "encrypted": encrypted,
+                        "size": packet_size,
+                        "status": status,
+                        "reason": " | ".join(reasons) if reasons else "Normal traffic"
+                    }
+                    
+                    captured_packets.append(packet_info)
+                    
+                    if len(captured_packets) >= 50:  # Limit to 50 packets
+                        return True  # Stop sniffing
+                        
+            except Exception as e:
+                pass
+        
+        # Capture packets for 10 seconds or until 50 packets are captured
+        try:
+            sniff(prn=packet_callback, timeout=10, store=False)
+        except PermissionError:
+            st.warning("⚠️ Insufficient permissions for packet capture. Please run with appropriate privileges.")
+            return run_network_forensics_simulated(cust_id)
+        
+        if not captured_packets:
+            st.warning("⚠️ No packets captured. Using simulated data.")
+            return run_network_forensics_simulated(cust_id)
+        
+        # Calculate metrics
+        encrypted_count = sum(1 for p in captured_packets if p["encrypted"])
+        unencrypted_count = len(captured_packets) - encrypted_count
+        suspicious_count = sum(1 for p in captured_packets if p["status"] == "suspicious")
+        total_bytes = sum(p["size"] for p in captured_packets)
+        
+        # Protocol distribution
+        proto_dist = defaultdict(int)
+        for p in captured_packets:
+            proto_dist[p["proto"]] += 1
+        
+        metrics = {
+            "total_packets": len(captured_packets),
+            "encrypted_packets": encrypted_count,
+            "unencrypted_packets": unencrypted_count,
+            "suspicious_packets": suspicious_count,
+            "total_bytes": total_bytes,
+            "protocol_distribution": dict(proto_dist)
+        }
+        
+        capture_data = {
+            "packets": captured_packets,
+            "metrics": metrics,
+            "capture_time": now_iso()
+        }
+        
+        safe_insert("forensic_network_captures", {
+            "cust_id": cust_id,
+            "total_packets": len(captured_packets),
+            "encrypted_packets": encrypted_count,
+            "unencrypted_packets": unencrypted_count,
+            "suspicious_packets": suspicious_count,
+            "capture_data": capture_data,
+            "capture_timestamp": now_iso()
+        })
+        
+        severity = "warning" if suspicious_count > 0 else "info"
+        log_event(cust_id, "Network Forensics", "completed", 
+                 f"Analyzed {len(captured_packets)} packets: {encrypted_count} encrypted, {suspicious_count} suspicious", 
+                 severity=severity)
+        
+        return captured_packets, metrics
+        
+    except ImportError:
+        st.warning("⚠️ Scapy library not installed. Using simulated data.")
+        return run_network_forensics_simulated(cust_id)
+    except Exception as e:
+        st.error(f"❌ Network capture error: {e}")
+        return run_network_forensics_simulated(cust_id)
+
+def run_network_forensics_simulated(cust_id: int) -> Tuple[List[dict], dict]:
+    """Fallback simulated network forensics if scapy is not available or permissions are insufficient."""
+    try:
+        import socket
+        import psutil
+        
+        # Get actual network connections from current process
+        captured_packets = []
+        
+        for conn in psutil.net_connections(kind='inet'):
+            try:
+                if conn.status == 'ESTABLISHED' and conn.raddr:
+                    # Determine protocol
+                    protocol = "TCP" if conn.type == socket.SOCK_STREAM else "UDP"
+                    
+                    # Try to resolve local IP
+                    try:
+                        local_ip = conn.laddr.ip if conn.laddr else "0.0.0.0"
+                        remote_ip = conn.raddr.ip if conn.raddr else "0.0.0.0"
+                        remote_port = conn.raddr.port if conn.raddr else 0
+                    except:
+                        continue
+                    
+                    # Identify common protocols by port
+                    encrypted = False
+                    if remote_port == 443:
+                        protocol = "HTTPS"
+                        encrypted = True
+                    elif remote_port == 80:
+                        protocol = "HTTP"
+                    elif remote_port == 22:
+                        protocol = "SSH"
+                        encrypted = True
+                    elif remote_port == 53:
+                        protocol = "DNS"
+                    
+                    packet_info = {
+                        "src": local_ip,
+                        "dst": remote_ip,
+                        "proto": protocol,
+                        "port": remote_port,
+                        "encrypted": encrypted,
+                        "size": 1420 if encrypted else 512,
+                        "status": "safe",
+                        "reason": "Active connection"
+                    }
+                    
+                    captured_packets.append(packet_info)
+                    
+                    if len(captured_packets) >= 20:
+                        break
+            except:
+                continue
+        
+        if not captured_packets:
+            # Absolute fallback to basic simulated data
+            captured_packets = [
+                {"src": "127.0.0.1", "dst": "8.8.8.8", "proto": "DNS", "port": 53, "encrypted": False, 
+                 "size": 64, "status": "safe", "reason": "DNS query"},
+                {"src": "127.0.0.1", "dst": "172.217.0.46", "proto": "HTTPS", "port": 443, "encrypted": True, 
+                 "size": 1420, "status": "safe", "reason": "Secure web traffic"},
+            ]
+        
+        encrypted_count = sum(1 for p in captured_packets if p["encrypted"])
+        unencrypted_count = len(captured_packets) - encrypted_count
+        suspicious_count = sum(1 for p in captured_packets if p["status"] == "suspicious")
+        total_bytes = sum(p["size"] for p in captured_packets)
+        
+        proto_dist = defaultdict(int)
+        for p in captured_packets:
+            proto_dist[p["proto"]] += 1
+        
+        metrics = {
+            "total_packets": len(captured_packets),
+            "encrypted_packets": encrypted_count,
+            "unencrypted_packets": unencrypted_count,
+            "suspicious_packets": suspicious_count,
+            "total_bytes": total_bytes,
+            "protocol_distribution": dict(proto_dist)
+        }
+        
+        return captured_packets, metrics
+        
+    except Exception as e:
+        # Last resort fallback
+        packets = [
+            {"src": "127.0.0.1", "dst": "8.8.8.8", "proto": "DNS", "port": 53, "encrypted": False, 
+             "size": 64, "status": "safe", "reason": "DNS query"}
+        ]
+        metrics = {
+            "total_packets": 1,
+            "encrypted_packets": 0,
+            "unencrypted_packets": 1,
+            "suspicious_packets": 0,
+            "total_bytes": 64,
+            "protocol_distribution": {"DNS": 1}
+        }
+        return packets, metrics
 
 def run_steganography_analysis(cust_id: int, uploaded_file) -> Tuple[dict, int, Any, Any, Any]:
     try:
