@@ -1,17 +1,20 @@
 """
 SOC-SIEM Banking System – Streamlit + Supabase + Twilio OTP Login
-Implements:
+Enhanced with:
+  • Real Image Forensics (Signature/Cheque Analysis)
   • Phone-based login using Supabase Auth + Twilio SMS
   • Encrypted banking transactions
-  • Security forensics (memory, network, steganography)
+  • Security forensics (memory, network, image steganography)
   • SIEM risk-scoring dashboard
 """
 
-import base64, hashlib, json, random, time
-from datetime import datetime, timedelta
+import base64, hashlib, json, random, time, io, math
+from datetime import datetime
 import pandas as pd, plotly.express as px, streamlit as st
 from supabase import create_client, Client
-
+import numpy as np
+import cv2
+from PIL import Image
 
 # =============================================================
 # 1️⃣  CONFIGURATION
@@ -40,7 +43,6 @@ def fmt_money(v):     return f"${v:,.2f}"
 # =============================================================
 
 def send_phone_otp(phone_number: str):
-    """Trigger Supabase to send OTP via Twilio."""
     try:
         supabase.auth.sign_in_with_otp({"phone": phone_number})
         st.success(f"📨 OTP sent to {phone_number}")
@@ -50,7 +52,6 @@ def send_phone_otp(phone_number: str):
         return False
 
 def verify_phone_otp(phone_number: str, otp_code: str):
-    """Verify OTP using Supabase Auth."""
     try:
         res = supabase.auth.verify_otp({"phone": phone_number, "token": otp_code, "type": "sms"})
         return res.user is not None
@@ -60,14 +61,15 @@ def verify_phone_otp(phone_number: str, otp_code: str):
 
 
 # =============================================================
-# 3️⃣  BANKING & FORENSICS UTILITIES (same as before)
+# 3️⃣  BANKING & FORENSICS UTILITIES
 # =============================================================
 
 def log_event(cust_id, action, status, details=""):
     try:
         payload = {"cust_id": cust_id, "action": action, "status": status, "details": details, "timestamp": now_iso()}
         supabase.table("activity_logs").insert({**payload, "log_hash": create_hash(payload)}).execute()
-    except Exception: pass
+    except Exception:
+        pass
 
 def create_transaction(cust_id, to_acc, amt):
     try:
@@ -84,49 +86,112 @@ def create_transaction(cust_id, to_acc, amt):
         supabase.table("customers").update({"account_balance": current - amt}).eq("cust_id", cust_id).execute()
         log_event(cust_id, "Transaction", "success", f"Transfer {fmt_money(amt)} → {to_acc}")
         return True, create_hash(txn)
-    except Exception as e: return False, str(e)
+    except Exception as e:
+        return False, str(e)
 
 def run_memory_forensics(cid):
-    procs=[{"name":"banking.exe","pid":1234,"cpu":3.1,"mem":50,"status":"safe"},
-           {"name":"suspicious.exe","pid":9000,"cpu":45,"mem":560,"status":"suspicious"}]
-    sus=sum(p["status"]=="suspicious" for p in procs)
-    supabase.table("forensic_memory_scans").insert({"cust_id":cid,"total_processes":len(procs),
-        "suspicious_processes":sus,"scan_data":{"procs":procs}}).execute()
-    log_event(cid,"Memory Forensics","success",f"{sus} suspicious")
-    return procs,sus
+    procs = [
+        {"name": "banking.exe", "pid": 1234, "cpu": 3.1, "mem": 50, "status": "safe"},
+        {"name": "suspicious.exe", "pid": 9000, "cpu": 45, "mem": 560, "status": "suspicious"}
+    ]
+    sus = sum(p["status"] == "suspicious" for p in procs)
+    supabase.table("forensic_memory_scans").insert({
+        "cust_id": cid, "total_processes": len(procs),
+        "suspicious_processes": sus, "scan_data": {"procs": procs}
+    }).execute()
+    log_event(cid, "Memory Forensics", "success", f"{sus} suspicious")
+    return procs, sus
 
 def run_network_forensics(cid):
-    pk=[{"src":"192.168.1.10","dst":"8.8.8.8","proto":"DNS","enc":False},
-        {"src":"192.168.1.10","dst":"10.0.0.50","proto":"HTTPS","enc":True}]
-    enc=sum(p["enc"] for p in pk)
-    supabase.table("forensic_network_captures").insert({"cust_id":cid,"total_packets":len(pk),
-        "encrypted_packets":enc,"unencrypted_packets":len(pk)-enc}).execute()
-    log_event(cid,"Network Forensics","success",f"{enc} encrypted")
-    return pk,enc,len(pk)-enc
-
-def run_stego(cid,fname):
-    a={"lsb":random.random()>0.7,"dct":random.random()>0.8,"chi":random.random()*100}
-    score=(30 if a["lsb"] else 0)+(40 if a["dct"] else 0)+(30 if a["chi"]>50 else 0)
-    supabase.table("forensic_steganography_scans").insert({"cust_id":cid,"file":fname,
-        "suspicion_score":score,"analysis":a}).execute()
-    log_event(cid,"Stego Scan","warning" if score>50 else "success",f"{fname}:{score}%")
-    return a,score
-
-def calc_risk(cid):
-    logs=supabase.table("activity_logs").select("*").eq("cust_id",cid).execute().data or []
-    f=sum(l["action"]=="Login" and l["status"]!="success" for l in logs)
-    w=sum(l["status"]=="warning" for l in logs)
-    return min(f*10+w*15,100)
+    pk = [
+        {"src": "192.168.1.10", "dst": "8.8.8.8", "proto": "DNS", "enc": False},
+        {"src": "192.168.1.10", "dst": "10.0.0.50", "proto": "HTTPS", "enc": True}
+    ]
+    enc = sum(p["enc"] for p in pk)
+    supabase.table("forensic_network_captures").insert({
+        "cust_id": cid, "total_packets": len(pk),
+        "encrypted_packets": enc, "unencrypted_packets": len(pk) - enc
+    }).execute()
+    log_event(cid, "Network Forensics", "success", f"{enc} encrypted")
+    return pk, enc, len(pk) - enc
 
 
 # =============================================================
-# 4️⃣  STREAMLIT UI
+# 4️⃣  REAL IMAGE FORENSICS (Signature / Cheque)
+# =============================================================
+
+def run_stego(cid, uploaded_file):
+    """Analyze uploaded image for tampering or steganography indicators."""
+    try:
+        img_bytes = uploaded_file.read()
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        np_img = np.array(img)
+
+        height, width, _ = np_img.shape
+        size_kb = len(img_bytes) / 1024
+
+        gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
+        noise_var = np.var(gray)
+
+        edges = cv2.Canny(gray, 100, 200)
+        edge_density = np.sum(edges > 0) / edges.size * 100
+
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+        hist_var = np.var(hist / hist.sum())
+
+        histogram = np.bincount(gray.flatten(), minlength=256)
+        probs = histogram / np.sum(histogram)
+        entropy = -np.sum([p * math.log2(p) for p in probs if p > 0])
+
+        # Risk scoring
+        score = 0
+        if entropy > 7.3: score += 30
+        if edge_density > 8: score += 25
+        if hist_var < 0.0005: score += 20
+        if noise_var > 2000: score += 25
+        score = min(int(score), 100)
+
+        analysis = {
+            "width": width,
+            "height": height,
+            "size_kb": round(size_kb, 2),
+            "noise_variance": round(float(noise_var), 2),
+            "edge_density": round(float(edge_density), 2),
+            "entropy": round(float(entropy), 3),
+            "histogram_variance": round(float(hist_var), 6)
+        }
+
+        supabase.table("forensic_steganography_scans").insert({
+            "cust_id": cid,
+            "file": uploaded_file.name,
+            "suspicion_score": score,
+            "analysis": analysis
+        }).execute()
+
+        log_event(cid, "Stego Scan", "warning" if score > 50 else "success", f"{uploaded_file.name}:{score}%")
+
+        return analysis, score, img, edges
+
+    except Exception as e:
+        st.error(f"Image analysis failed: {e}")
+        return {}, 0, None, None
+
+
+def calc_risk(cid):
+    logs = supabase.table("activity_logs").select("*").eq("cust_id", cid).execute().data or []
+    f = sum(l["action"] == "Login" and l["status"] != "success" for l in logs)
+    w = sum(l["status"] == "warning" for l in logs)
+    return min(f * 10 + w * 15, 100)
+
+
+# =============================================================
+# 5️⃣  STREAMLIT UI
 # =============================================================
 
 def ui_header():
-    st.set_page_config(page_title="SOC-SIEM Banking",page_icon="🏦",layout="wide")
+    st.set_page_config(page_title="SOC-SIEM Banking", page_icon="🏦", layout="wide")
     st.markdown("<h2 style='text-align:center;color:white;background:#1e3a8a;padding:10px;border-radius:8px'>"
-                "🛡️ SOC-SIEM Banking System</h2>",unsafe_allow_html=True)
+                "🛡️ SOC-SIEM Banking System</h2>", unsafe_allow_html=True)
 
 def init_state():
     for k,v in {"auth":False,"user_phone":None,"verified":False}.items():
@@ -134,68 +199,91 @@ def init_state():
 
 def phone_login_ui():
     st.subheader("📱 Phone Login")
-    phone=st.text_input("Enter phone number (with country code, e.g. +911234567890)")
+    phone = st.text_input("Enter phone number (with country code, e.g. +911234567890)")
     if st.button("Send OTP"):
         if send_phone_otp(phone):
-            st.session_state.user_phone=phone
-            st.session_state.awaiting_otp=True
+            st.session_state.user_phone = phone
+            st.session_state.awaiting_otp = True
             st.success("OTP sent via SMS!")
     if st.session_state.get("awaiting_otp"):
-        otp=st.text_input("Enter OTP")
+        otp = st.text_input("Enter OTP")
         if st.button("Verify"):
-            if verify_phone_otp(st.session_state.user_phone,otp):
-                st.session_state.auth=True
+            if verify_phone_otp(st.session_state.user_phone, otp):
+                st.session_state.auth = True
                 st.success("✅ Verified & logged in!")
                 st.rerun()
             else:
                 st.error("❌ Invalid or expired OTP")
 
-
 def dashboard_ui():
     st.sidebar.success(f"Logged in: {st.session_state.user_phone}")
-    opt=st.sidebar.radio("Navigation",["Dashboard","Transactions","Forensics","SIEM Reports"])
+    opt = st.sidebar.radio("Navigation", ["Dashboard", "Transactions", "Forensics", "SIEM Reports"])
     if st.sidebar.button("Logout"):
-        for k in ["auth","user_phone","verified","awaiting_otp"]:
+        for k in ["auth", "user_phone", "verified", "awaiting_otp"]:
             st.session_state.pop(k, None)
         st.rerun()
 
-    if opt=="Dashboard":
+    if opt == "Dashboard":
         st.markdown("### 🏠 Security Dashboard")
-        cid=1  # demo
-        risk=calc_risk(cid)
-        st.metric("Risk Score",f"{risk}%")
-    elif opt=="Transactions":
+        cid = 1
+        risk = calc_risk(cid)
+        st.metric("Risk Score", f"{risk}%")
+
+    elif opt == "Transactions":
         st.markdown("### 💳 Transactions")
-        to=st.text_input("Recipient")
-        amt=st.number_input("Amount",min_value=0.01)
+        to = st.text_input("Recipient")
+        amt = st.number_input("Amount", min_value=0.01)
         if st.button("Send"):
-            ok,msg=create_transaction(1,to,amt)
+            ok, msg = create_transaction(1, to, amt)
             st.success("Done" if ok else msg)
-    elif opt=="Forensics":
+
+    elif opt == "Forensics":
         st.markdown("### 🔬 Forensic Tools")
         if st.button("Memory Scan"):
-            data,s=run_memory_forensics(1); st.write(data)
+            data, s = run_memory_forensics(1)
+            st.write(data)
         if st.button("Network Scan"):
-            pk,e,u=run_network_forensics(1); st.write(pk)
-        f=st.file_uploader("Image for Stego"); 
-        if f and st.button("Analyze Image"):
-            a,sc=run_stego(1,f.name); st.metric("Suspicion",f"{sc}%")
+            pk, e, u = run_network_forensics(1)
+            st.write(pk)
+
+        st.markdown("#### 🖼️ Image for Steganography / Signature Analysis")
+        uploaded = st.file_uploader("Upload image (signature, cheque, or photo)", type=["jpg","jpeg","png"])
+
+        if uploaded and st.button("Analyze Image"):
+            analysis, score, img, edges = run_stego(1, uploaded)
+            if analysis:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.image(img, caption="Uploaded Image", use_container_width=True)
+                with col2:
+                    st.image(edges, caption="Detected Edges", use_container_width=True)
+                st.subheader("📊 Analysis Results")
+                st.json(analysis)
+                st.metric("Suspicion Level", f"{score}%")
+                if score > 60:
+                    st.warning("⚠️ Possible tampering or hidden data detected!")
+                else:
+                    st.success("✅ Image appears clean and untampered.")
+
     else:
         st.markdown("### 📊 SIEM Reports (Demo)")
-        logs=supabase.table("activity_logs").select("*").limit(100).execute().data or []
+        logs = supabase.table("activity_logs").select("*").limit(100).execute().data or []
         if logs:
-            dist={}
-            for l in logs: dist[l["action"]]=dist.get(l["action"],0)+1
-            st.plotly_chart(px.pie(values=list(dist.values()),names=list(dist.keys())))
+            dist = {}
+            for l in logs:
+                dist[l["action"]] = dist.get(l["action"], 0) + 1
+            st.plotly_chart(px.pie(values=list(dist.values()), names=list(dist.keys())))
         else:
             st.info("No logs yet.")
 
 
 def main():
-    ui_header(); init_state()
+    ui_header()
+    init_state()
     if not st.session_state.auth:
         phone_login_ui()
     else:
         dashboard_ui()
 
-if __name__=="__main__": main()
+if __name__ == "__main__":
+    main()
