@@ -3,3 +3,8 @@ supabase
 plotly
 pandas
 opencv-python-headless
+Pillow
+numpy
+twilio
+python-dateutil
+requests
